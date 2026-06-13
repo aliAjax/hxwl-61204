@@ -202,6 +202,20 @@ def owner_samples(request, owner: str):
         return JsonResponse(rows_to_json(rows), safe=False)
 
 
+def project_samples(request, project_name: str):
+    with conn() as db:
+        rows = db.execute(
+            """
+            SELECT sample_code, freezer, shelf, slot, owner
+            FROM samples
+            WHERE project_name = ? AND status = 'stored'
+            ORDER BY stored_at DESC
+            """,
+            (project_name,),
+        ).fetchall()
+        return JsonResponse(rows_to_json(rows), safe=False)
+
+
 @csrf_exempt
 def freezer_config(request):
     if request.method == "GET":
