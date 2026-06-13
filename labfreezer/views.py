@@ -32,6 +32,18 @@ def init_db() -> None:
             )
             """
         )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS freezer_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                freezer TEXT NOT NULL UNIQUE,
+                shelf_count INTEGER NOT NULL,
+                slots_per_shelf INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
 
 
 def body(request) -> dict:
@@ -118,15 +130,63 @@ def checkout_sample(request, sample_id: int):
 
 def slots(request):
     with conn() as db:
-        rows = db.execute(
+        freezer_configs = db.execute(
+            "SELECT freezer, shelf_count, slots_per_shelf FROM freezer_configs ORDER BY freezer"
+        ).fetchall()
+        occupied_slots = db.execute(
             """
             SELECT freezer, shelf, slot, sample_code, project_name, owner
             FROM samples
             WHERE status = 'stored'
-            ORDER BY freezer, shelf, slot
             """
         ).fetchall()
-        return JsonResponse(rows_to_json(rows), safe=False)
+
+    occupied_map = {}
+    for row in occupied_slots:
+        key = (row["freezer"], str(row["shelf"]), str(row["slot"]))
+        occupied_map[key] = {
+            "sample_code": row["sample_code"],
+            "project_name": row["project_name"],
+            "owner": row["owner"],
+        }
+
+    all_slots = []
+    for config in freezer_configs:
+        freezer = config["freezer"]
+        shelf_count = config["shelf_count"]
+        slots_per_shelf = config["slots_per_shelf"]
+        for shelf_num in range(1, shelf_count + 1):
+            shelf = str(shelf_num)
+            for slot_num in range(1, slots_per_shelf + 1):
+                slot = str(slot_num)
+                key = (freezer, shelf, slot)
+                occupied = occupied_map.get(key)
+                if occupied:
+                    all_slots.append(
+                        {
+                            "freezer": freezer,
+                            "shelf": shelf,
+                            "slot": slot,
+                            "status": "occupied",
+                            "sample_code": occupied["sample_code"],
+                            "project_name": occupied["project_name"],
+                            "owner": occupied["owner"],
+                        }
+                    )
+                else:
+                    all_slots.append(
+                        {
+                            "freezer": freezer,
+                            "shelf": shelf,
+                            "slot": slot,
+                            "status": "available",
+                            "sample_code": None,
+                            "project_name": None,
+                            "owner": None,
+                        }
+                    )
+
+    return JsonResponse(all_slots, safe=False)
 
 
 def owner_samples(request, owner: str):
@@ -140,3 +200,71 @@ def owner_samples(request, owner: str):
             (owner,),
         ).fetchall()
         return JsonResponse(rows_to_json(rows), safe=False)
+
+
+@csrf_exempt
+def freezer_config(request):
+    if request.method == "GET":
+        with conn() as db:
+            rows = db.execute(
+                """
+                SELECT id, freezer, shelf_count, slots_per_shelf, created_at, updated_at
+                FROM freezer_configs
+                ORDER BY freezer
+                """
+            ).fetchall()
+            return JsonResponse(rows_to_json(rows), safe=False)
+    return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@csrf_exempt
+def init_freezer(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    payload = body(request)
+    freezer = payload.get("freezer")
+    shelf_count = payload.get("shelf_count")
+    slots_per_shelf = payload.get("slots_per_shelf")
+
+    if not freezer or not shelf_count or not slots_per_shelf:
+        return JsonResponse(
+            {"error": "freezer, shelf_count, and slots_per_shelf are required"},
+            status=400,
+        )
+    if not isinstance(shelf_count, int) or shelf_count <= 0:
+        return JsonResponse(
+            {"error": "shelf_count must be a positive integer"},
+            status=400,
+        )
+    if not isinstance(slots_per_shelf, int) or slots_per_shelf <= 0:
+        return JsonResponse(
+            {"error": "slots_per_shelf must be a positive integer"},
+            status=400,
+        )
+
+    with conn() as db:
+        existing = db.execute(
+            "SELECT id FROM freezer_configs WHERE freezer = ?", (freezer,)
+        ).fetchone()
+        if existing:
+            db.execute(
+                """
+                UPDATE freezer_configs
+                SET shelf_count = ?, slots_per_shelf = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE freezer = ?
+                """,
+                (shelf_count, slots_per_shelf, freezer),
+            )
+        else:
+            db.execute(
+                """
+                INSERT INTO freezer_configs
+                (freezer, shelf_count, slots_per_shelf)
+                VALUES (?, ?, ?)
+                """,
+                (freezer, shelf_count, slots_per_shelf),
+            )
+        row = db.execute(
+            "SELECT * FROM freezer_configs WHERE freezer = ?", (freezer,)
+        ).fetchone()
+        return JsonResponse(dict(row), status=201 if not existing else 200)

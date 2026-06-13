@@ -9,4 +9,6 @@ urlpatterns = [
     path("samples/<int:sample_id>/checkout/", views.checkout_sample),
     path("slots/", views.slots),
     path("owners/<str:owner>/samples/", views.owner_samples),
+    path("freezers/", views.freezer_config),
+    path("freezers/init/", views.init_freezer),
 ]
